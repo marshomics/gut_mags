@@ -308,6 +308,24 @@ rather than a traceback:
     no permutation p; and it could not tell a conservative null from a degenerate
     one. It now caps the FDR, reports `p_empirical` with the add-one correction,
     and flags the degenerate case.
+16. `check_sge_profile.py` — the cluster-profile validator written to catch this
+    class of error — committed it. `qconf -sq` is permitted only from an admin
+    host, and from anywhere else answers `denied: host "..." is not an admin
+    host`. The validator read that stderr and reported `queue 'standard.q' not
+    found`, turning a refusal to answer into the answer "no". It now separates
+    VERIFIED from ASSUMED (recorded in `config/sge/cluster.yaml`, with
+    provenance) from UNVERIFIABLE, never reports absence from a denied query,
+    cross-checks recorded facts against qconf when qconf answers, and falls back
+    to `qsub -w v` — a dry scheduling run that works from any submit host.
+17. The cluster profiles requested `cpus_per_task: 8` for four rules that declare
+    no `threads:` directive and therefore run single-threaded, reserving seven
+    idle cores each; and `check_sge_profile.py` verified its `qsub -w v` requests
+    against an assumed 8 threads rather than the number Snakemake would actually
+    pass, so the request it validated was not the request that would be
+    submitted. Threads are now stated per rule in `set-threads` in all three
+    profiles, the per-slot memory divisor follows from that number, and
+    `tests/run_tests.sh` fails if the profiles disagree with each other or if
+    `cpus_per_task` contradicts `set-threads`.
 
 Test-harness errors — recorded because they were mistaken for code bugs:
 

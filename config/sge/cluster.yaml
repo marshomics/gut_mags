@@ -1,0 +1,42 @@
+# Recorded facts about the SGE cluster.
+#
+# `qconf -sc`, `qconf -spl` and `qconf -sq` are only permitted from an ADMIN
+# HOST. From an ordinary submit host they fail with
+#     denied: host "..." is not an admin host
+# which says nothing about whether the queue or complex exists. check_sge_profile.py
+# therefore falls back to these recorded values when qconf is denied, and
+# cross-checks them (warning on drift) when qconf is available.
+#
+# Regenerate on an admin host with:
+#     bash config/sge/record_cluster_facts.sh > config/sge/cluster.yaml
+
+recorded_on: "2026-07-09"
+recorded_from: "node519"
+recorded_by: "qconf -sc | qconf -spl | qconf -sq <queue>"
+
+parallel_environments: ["openmpi", "parallel"]
+
+complexes:
+  # consumable: per_slot  -> `qconf -sc` said YES; the request is consumed once
+  #                          per slot, so a job total must be divided by threads
+  # consumable: per_job   -> `qconf -sc` said JOB; request the total unchanged
+  # consumable: false     -> `qconf -sc` said NO; requesting it RESERVES NOTHING.
+  #                          It filters dispatch and is then untracked.
+  h_vmem:
+    requestable: true
+    consumable: per_slot
+  mem_free:
+    requestable: true
+    consumable: false
+
+queues:
+  standard.q:
+    h_rt: "24:00:00"
+    slots: 865
+  long.q:
+    h_rt: "672:00:00"
+    slots: 2112
+  test.q:
+    slots: 64
+  cryo-em.q:
+    slots: 576

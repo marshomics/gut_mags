@@ -1,0 +1,167 @@
+# Snakemake 8+ SGE / UGE / OGS profile.
+#
+#   pip install snakemake-executor-plugin-sge
+#   python scripts/python/check_sge_profile.py config/sge      # validate first
+#
+# The qconf facts below are recorded in config/sge/cluster.yaml, because qconf is
+# admin-host only (node519 yes, morty no). Regenerate with:
+#   bash config/sge/record_cluster_facts.sh > config/sge/cluster.yaml
+#   snakemake --workflow-profile config/sge --use-conda -j 200
+#
+# Written against this cluster, as reported by qhost / qstat -g c / qconf:
+#
+#   queues        standard.q  h_rt 24:00:00   865 slots
+#                 long.q      h_rt 672:00:00  2112 slots
+#                 test.q      64 slots
+#   parallel env  openmpi, parallel   <- no 'smp' PE, so threaded jobs use
+#                                        -pe parallel <threads>
+#   memory        h_vmem    requestable YES, consumable YES   <- use this
+#                 mem_free  requestable YES, consumable NO    <- reserves nothing
+#   nodes         32-256 cores, 504 GB - 2 TB RAM
+#   quotas        none (`qconf -srqs`: no set)
+#
+# Two consequences of the above drive every choice in this file.
+#
+# MEMORY. Only h_vmem is consumable, so only h_vmem actually reserves memory;
+# mem_free is checked once at dispatch and never tracked, which lets jobs
+# oversubscribe a node until the OOM killer arbitrates. h_vmem is also a HARD
+# limit on address space, not on resident memory: a tool that maps far more than
+# it touches (diamond, some JVM and glibc-arena patterns) is killed even when its
+# RSS is small. So request generously and, if a job dies on memory while RSS
+# looks fine, raise h_vmem before you believe the number. Under `-pe parallel N`
+# a consumable complex is consumed PER SLOT: mem_mb below is the job TOTAL and
+# the plugin divides it by the thread count.
+#
+# WALL CLOCK. standard.q stops at 24 h, long.q at 672 h. Anything that could
+# plausibly run past ~20 h goes to long.q with real headroom, because a job
+# killed at h_rt is retried identically by `restart-times` and dies again.
+#
+# Rules absent from set-resources take the defaults. Snakemake silently ignores a
+# set-resources key that is not a rule name; tests/run_tests.sh checks the keys,
+# and check_sge_profile.py checks the routing against the live queues.
+
+executor: sge
+jobs: 200                    # standard.q had ~761 slots free; stay well under it
+use-conda: true
+conda-frontend: mamba
+rerun-incomplete: true
+keep-going: true
+printshellcmds: true
+restart-times: 2
+latency-wait: 60             # shared-filesystem lag before a missing output is an error
+
+# --- qsub flags applied to every job -----------------------------------------
+sge-queue: "standard.q"
+sge-pe: "parallel"           # from `qconf -spl`; used whenever threads > 1
+sge-export-env: true         # -V, so the conda env from --use-conda survives
+sge-join-logs: true
+sge-logdir: ".snakemake/sge_logs"
+sge-task-concurrency: 100    # -tc: cap concurrent array tasks, so one chunked rule
+                             # (dbCAN fans out to ~290 jobs) cannot fill the queue
+sge-use-qacct: true          # qstat for running jobs, qacct for finished ones
+
+default-resources:
+  runtime: 120               # minutes -> h_rt
+  mem_mb: 8000               # TOTAL for the job; the plugin divides by threads
+  sge_queue: "standard.q"
+
+set-resources:
+  # --- de-novo annotation: one chunk of genomes per job ----------------------
+  # All comfortably inside standard.q's 24 h. antiSMASH is the slow one; if a
+  # chunk of 2000 representatives starts hitting 20 h, halve
+  # resources.annotation_chunk_size rather than moving it to long.q.
+  run_dbcan:
+    mem_mb: 16000
+    runtime: 240             # 4 h
+  run_antismash:
+    mem_mb: 24000
+    runtime: 720             # 12 h
+  run_amrfinder:
+    mem_mb: 8000
+    runtime: 120
+
+  # --- GTDB scaffold: the bac120 tree is pruned in memory --------------------
+  # Single-threaded, so 320 GB lands on ONE slot as h_vmem=320000M. Every node
+  # has >= 504 GB, so it fits, but it only starts once a node has 320 GB free.
+  # long.q for the memory wait, not the runtime.
+  scaffold:
+    mem_mb: 320000
+    runtime: 1440            # 24 h, on a 672 h queue
+    sge_queue: "long.q"
+
+  # --- differential stack ---------------------------------------------------
+  phyloglm_chunk:
+    mem_mb: 32000
+    runtime: 360             # 6 h per feature chunk
+  species_profiles:
+    mem_mb: 64000
+    runtime: 240
+  ordination:
+    mem_mb: 64000
+    runtime: 240
+
+  # --- within-species transition --------------------------------------------
+  mash_dereplicate:
+    mem_mb: 16000
+    runtime: 240
+  panaroo_species:
+    mem_mb: 32000
+    runtime: 720             # 12 h
+  gubbins_species:
+    mem_mb: 16000
+    runtime: 720
+  iqtree_species:            # ModelFinder + UFBoot on a masked core alignment
+    mem_mb: 16000
+    runtime: 2880            # 48 h
+    sge_queue: "long.q"
+
+  # --- pan-GWAS and selection -----------------------------------------------
+  clade_panaroo:             # a whole genus of genomes; the slowest rule here
+    mem_mb: 64000
+    runtime: 4320            # 72 h
+    sge_queue: "long.q"
+  scoary_run:
+    mem_mb: 32000
+    runtime: 720
+  clade_scoary_run:
+    mem_mb: 32000
+    runtime: 720
+  selection_hyphy:           # BUSTED + RELAX per gene family
+    mem_mb: 16000
+    runtime: 2880            # 48 h
+    sge_queue: "long.q"
+
+# --- Escalating a rule -------------------------------------------------------
+# If a rule is killed at 24 h on standard.q, do not raise `runtime` past 1440:
+# add `sge_queue: "long.q"` and then raise it. Verify with
+#     python scripts/python/check_sge_profile.py config/sge
+#
+# To co-request mem_free as a dispatch filter (it reserves nothing, but keeps a
+# job off a node whose RAM is already committed):
+#   set-resources:
+#     scaffold:
+#       sge_extra: "-l mem_free=40G"      # per slot, matching h_vmem
+
+# Slots each rule actually uses. Snakemake takes threads from each rule's
+# `threads:` directive unless overridden here, and the SGE executor passes that
+# number to `-pe parallel N` -- so it is also the divisor for the per-slot h_vmem
+# request. Four rules (scaffold, phyloglm_chunk, species_profiles, ordination)
+# declare no `threads:` at all and would silently get 1; their parallelism comes
+# from chunking, not from slots, so 1 is correct and the whole mem_mb lands on a
+# single slot. Stating every value here means the request and the tool agree.
+set-threads:
+  run_dbcan: 8
+  run_antismash: 8
+  run_amrfinder: 4
+  scaffold: 1              # single-threaded tree pruning; memory is the constraint
+  phyloglm_chunk: 1        # phylolm is single-threaded; parallelism = feature chunks
+  species_profiles: 1
+  ordination: 1
+  mash_dereplicate: 4
+  panaroo_species: 8
+  gubbins_species: 8
+  iqtree_species: 8
+  clade_panaroo: 8
+  scoary_run: 8
+  clade_scoary_run: 4
+  selection_hyphy: 4

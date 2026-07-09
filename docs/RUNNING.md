@@ -102,7 +102,7 @@ column, set `population.enabled: true` and the `western_vs_nonwestern` contrast 
 injected automatically into the differential, Scoary2 and enrichment stacks — no
 other edit.
 
-## 2. Environment
+## 2. Environment and scheduler
 
 ```bash
 conda install -n base -c conda-forge -c bioconda snakemake'>=8' mamba
@@ -110,6 +110,94 @@ conda install -n base -c conda-forge -c bioconda snakemake'>=8' mamba
 
 Per-rule conda environments live in `envs/` and are built on first use by
 `--use-conda`. Nothing else needs installing by hand.
+
+Three cluster profiles ship with the pipeline. Every command below is written
+against SLURM; substitute the profile you use.
+
+| Profile | Scheduler | Needs |
+|---|---|---|
+| `config/slurm` | SLURM | `snakemake-executor-plugin-slurm` |
+| `config/sge` | SGE / UGE / OGS | `pip install snakemake-executor-plugin-sge` |
+| `config/sge-generic` | SGE, via the generic executor | `pip install snakemake-executor-plugin-cluster-generic`; only `qsub`, `qstat`, `qacct`, `qdel` |
+
+```bash
+snakemake --workflow-profile config/sge --use-conda -j 200
+```
+
+Prefer `config/sge` for array-job submission; prefer `config/sge-generic` if you
+would rather not depend on a third-party executor plugin. Validate either against
+the live cluster before submitting anything:
+
+```bash
+python scripts/python/check_sge_profile.py config/sge
+```
+
+That checks every rule's `runtime` against the `h_rt` ceiling of the queue it is
+routed to, that the parallel environment and queues exist, and that the memory
+complex being requested is actually *consumable*.
+
+It works from any submit host, which takes some doing. `qconf -sc`, `qconf -spl`
+and `qconf -sq` are permitted only from an **admin host** (`qconf -sh` lists
+them; `node519` is one, `morty` is not). Elsewhere they answer
+
+```
+denied: host "morty.eb.local" is not an admin host
+```
+
+which is a refusal to answer, not the answer "no". So the checker draws on three
+sources and says which one each fact came from:
+
+- **qconf**, when it answers. Its values are cross-checked against
+  `config/sge/cluster.yaml` and any disagreement is reported as `DRIFT`.
+- **`config/sge/cluster.yaml`**, the facts recorded earlier on an admin host,
+  with provenance. Regenerate with `bash config/sge/record_cluster_facts.sh >
+  config/sge/cluster.yaml` when the cluster changes.
+- **`qsub -w v`**, a dry scheduling run against an empty cluster. It submits
+  nothing, works anywhere, and rejects a request whose `h_rt` exceeds the queue
+  ceiling or whose queue, PE or complex is unknown. It cannot see whether a
+  complex is *consumable*, which is the one thing that still needs qconf.
+
+Anything none of the three can settle is printed as `unverifiable from this
+host`, with the command to run on an admin host. It does not fail the check —
+an unanswered question is not a failed answer.
+
+Both profiles are tuned to this cluster:
+
+| | |
+|---|---|
+| `standard.q` | `h_rt` 24 h, 865 slots — everything under ~20 h |
+| `long.q` | `h_rt` 672 h, 2112 slots — `scaffold`, `iqtree_species`, `clade_panaroo`, `selection_hyphy` |
+| parallel env | `parallel` (there is no `smp`), used as `-pe parallel <threads>` |
+| memory | `h_vmem`, requestable **and consumable** |
+
+Three things about memory on this cluster, all of which bite silently.
+
+`mem_free` is requestable but **not consumable**, so requesting it reserves
+nothing: it is checked once at dispatch and never tracked, and jobs oversubscribe
+the node until the OOM killer picks a winner. Only `h_vmem` reserves. Set
+`SGE_MEM_FREE_TOO=1` to co-request `mem_free` as a dispatch filter if you want
+both.
+
+`h_vmem` is consumed **per slot**. Under `-pe parallel 8`, `h_vmem=40G` reserves
+320 GB. `mem_mb` in the profiles is the job total and is divided by the thread
+count before submission.
+
+`h_vmem` caps **address space, not resident memory**. A tool that maps far more
+than it touches — diamond, some JVM and glibc-arena patterns — is killed with a
+small RSS. If a job dies on memory while `qacct` shows modest `maxvmem`, raise
+the request before doubting the tool.
+
+Threads are stated explicitly in every profile under `set-threads`, because they
+decide two things at once: the `-pe parallel N` slot count, and the divisor that
+turns a job's total `mem_mb` into its per-slot `h_vmem`. Four rules (`scaffold`,
+`phyloglm_chunk`, `species_profiles`, `ordination`) declare no `threads:` and so
+get 1 — their parallelism comes from chunking, not cores. Reserving 8 CPUs for
+them would idle 7.
+
+The heaviest single job is `scaffold` (pruning the GTDB bac120 tree): single
+threaded, so its 320 GB lands on **one slot** as `h_vmem=320000M`. Every node has
+at least 504 GB, so it fits, but it only starts once a node has 320 GB free —
+which is why it is routed to `long.q` despite needing only 24 h.
 
 ## 3. Configure
 
@@ -124,7 +212,9 @@ annotation databases. Per-genome annotations are either
 `inputs.annotation_manifest` or the `{genome}` templates in `inputs.annotations`,
 as above.
 
-Then set your cluster's partition and account in `config/slurm/config.yaml`.
+Then set your scheduler settings: partition and account in
+`config/slurm/config.yaml`, or the queue names in `config/sge/config.yaml` /
+`config/sge-generic/config.yaml`.
 
 Everything scientific is in `config/config.yaml` with the reasoning beside it.
 Nothing scientific is hard-coded in a script.
@@ -251,8 +341,8 @@ metadata + profiles ─> redundancy_all ─> western_all (needs western_nonweste
 
 ## Order of operations, if you want the short version
 
-1. `bash tests/run_tests.sh`
-2. fill the `CHANGE_ME` paths and the SLURM partition/account
+1. `bash tests/run_tests.sh`, then (SGE) `python scripts/python/check_sge_profile.py config/sge`
+2. fill the `CHANGE_ME` paths, and the queue (SGE) or partition/account (SLURM)
 3. `python resources/fetch_kegg_modules.py --out resources/kegg_modules.tsv`
 4. `snakemake -n -p`
 5. `snakemake ... -j 500` (taxonomy) and `snakemake community_all ...` in parallel

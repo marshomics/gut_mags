@@ -76,6 +76,7 @@ split/migration model.
 ## Prerequisites
 
 - Snakemake >= 8, conda/mamba (per-rule environments are in `envs/`).
+- A cluster profile: SLURM, or SGE/UGE via `config/sge` or `config/sge-generic`.
 - The genomes' existing annotations: Prokka, eggNOG-mapper, KofamScan outputs.
 - Assemblies (for de novo dbCAN / antiSMASH / AMRFinder, which the workflow runs).
 - GTDB release reference trees + taxonomy (bac120, ar53), and GTDB-Tk DB if you
@@ -121,18 +122,23 @@ open results/report/report.html
 bash scripts/sh/run_sensitivity.sh "--workflow-profile config/slurm --use-conda -j 300"
 ```
 
-The author runs this; the pipeline is not executed during its construction. Tune
-per-rule resources in `config/slurm/config.yaml`.
+The author runs this; the pipeline is not executed during its construction.
+Cluster profiles for SLURM (`config/slurm`) and SGE/UGE (`config/sge`, or
+`config/sge-generic` which needs only qsub/qstat/qacct) are in `config/`; tune
+per-rule resources there. `bash tests/run_tests.sh` checks that every per-rule
+key in a profile names a real rule, because Snakemake ignores a typo silently;
+`python scripts/python/check_sge_profile.py config/sge` checks the queue routing,
+the parallel environment and the memory complex against the live cluster.
 
 ## Layout
 
 ```
-config/        config.yaml (all parameters) + SLURM profile + generated sweeps
+config/        config.yaml (all parameters) + slurm/ sge/ sge-generic/ profiles
 envs/          per-rule conda environments
 workflow/      Snakefile + rules/{annotation,profiles,comparative,figures,report}.smk
 scripts/python annotation parsing, profiles, differential methods, figures, report
 scripts/R      phyloglm, signal, PGLS, ancestral, ordination/varpart, tree figures
-scripts/sh     sensitivity sweep driver
+scripts/sh     sensitivity sweep driver, symlink farm helper
 resources/     KEGG module fetcher + reference-data notes
 docs/          DESIGN_RATIONALE, METHODS (manuscript draft), OUTPUTS catalogue
 ```

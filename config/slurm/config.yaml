@@ -4,6 +4,10 @@
 # Adjust 'slurm_partition' / 'slurm_account' to your cluster. Per-rule resources
 # are read from the `resources:` directive in each rule; defaults below apply
 # when a rule does not set them.
+#
+# Snakemake silently ignores a set-resources or set-threads key that does not
+# name a real rule, so a typo here costs you memory rather than raising an error.
+# tests/run_tests.sh checks every key against the rule names in workflow/.
 
 executor: slurm
 jobs: 500
@@ -24,6 +28,7 @@ default-resources:
 
 # Per-rule overrides (names must match rule names in workflow/rules/*.smk).
 set-resources:
+  # --- de-novo annotation: one chunk of genomes per job ----------------------
   run_dbcan:
     mem_mb: 16000
     cpus_per_task: 8
@@ -36,19 +41,77 @@ set-resources:
     mem_mb: 8000
     cpus_per_task: 4
     runtime: 120
-  gtdbtk_denovo:
-    mem_mb: 320000         # GTDB-Tk pplacer is memory-hungry
-    cpus_per_task: 32
+  # --- GTDB scaffold: the bac120 tree is pruned in memory --------------------
+  scaffold:
+    mem_mb: 320000
+    cpus_per_task: 1
     runtime: 1440
-  phyloglm_enrichment:
+  # --- differential stack ---------------------------------------------------
+  phyloglm_chunk:            # phylogenetic logistic regression, per feature chunk
+    mem_mb: 32000
+    cpus_per_task: 1         # phylolm is single-threaded; parallelism = chunks
+    runtime: 360
+  species_profiles:
+    mem_mb: 64000
+    cpus_per_task: 1
+    runtime: 240
+  ordination:
+    mem_mb: 64000
+    cpus_per_task: 1
+    runtime: 240
+  # --- within-species transition: per-species pangenome, masking, tree -------
+  mash_dereplicate:
+    mem_mb: 16000
+    cpus_per_task: 4
+    runtime: 240
+  panaroo_species:
     mem_mb: 32000
     cpus_per_task: 8
-    runtime: 360
-  build_species_profiles:
+    runtime: 720
+  gubbins_species:
+    mem_mb: 16000
+    cpus_per_task: 8
+    runtime: 720
+  iqtree_species:
+    mem_mb: 16000
+    cpus_per_task: 8
+    runtime: 1440
+  # --- pan-GWAS and selection -----------------------------------------------
+  clade_panaroo:
     mem_mb: 64000
     cpus_per_task: 8
-    runtime: 240
-  ordination_permanova:
-    mem_mb: 64000
+    runtime: 1440
+  scoary_run:
+    mem_mb: 32000
     cpus_per_task: 8
-    runtime: 240
+    runtime: 720
+  clade_scoary_run:
+    mem_mb: 32000
+    cpus_per_task: 4
+    runtime: 720
+  selection_hyphy:
+    mem_mb: 16000
+    cpus_per_task: 4
+    runtime: 1440
+
+# Threads = slots = cpus_per_task. Snakemake takes threads from each rule's
+# `threads:` directive unless overridden here; requesting more CPUs than the tool
+# is told to use just idles them. scaffold, phyloglm_chunk, species_profiles and
+# ordination declare no `threads:` and are single-threaded: their parallelism
+# comes from chunking, not from cores.
+set-threads:
+  run_dbcan: 8
+  run_antismash: 8
+  run_amrfinder: 4
+  scaffold: 1
+  phyloglm_chunk: 1
+  species_profiles: 1
+  ordination: 1
+  mash_dereplicate: 4
+  panaroo_species: 8
+  gubbins_species: 8
+  iqtree_species: 8
+  clade_panaroo: 8
+  scoary_run: 8
+  clade_scoary_run: 4
+  selection_hyphy: 4

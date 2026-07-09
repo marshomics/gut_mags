@@ -1,0 +1,135 @@
+# Snakemake 8+ SGE profile via the generic cluster executor.
+#
+#   pip install snakemake-executor-plugin-cluster-generic
+#   python scripts/python/check_sge_profile.py config/sge-generic   # validate first
+#
+# Cluster facts are read from config/sge/cluster.yaml when qconf is denied
+# (it is admin-host only). Regenerate on an admin host with
+#   bash config/sge/record_cluster_facts.sh > config/sge/cluster.yaml
+#   snakemake --workflow-profile config/sge-generic --use-conda -j 200
+#
+# Use this in preference to config/sge if you would rather not depend on the
+# third-party snakemake-executor-plugin-sge: everything below needs only qsub,
+# qstat, qacct and qdel. The trade-off is that each job is submitted
+# individually rather than as an array task, so a chunked rule that fans out to
+# a few hundred jobs makes a few hundred qsub calls.
+#
+# Cluster facts this file is written against (qconf / qstat -g c):
+#   standard.q  h_rt 24:00:00      long.q  h_rt 672:00:00
+#   parallel environments: openmpi, parallel   (no 'smp')
+#   h_vmem    requestable YES, consumable YES  <- reserves memory; use it
+#   mem_free  requestable YES, consumable NO   <- reserves nothing
+#
+# h_vmem is consumed PER SLOT and is a hard limit on address space rather than
+# resident memory, so a tool that maps more than it touches can be killed with a
+# small RSS. qsub_submit.sh divides the job's total mem_mb by its thread count;
+# qsub_status.sh handles the qstat/qacct window in which a finished job exists
+# nowhere and a naive script reports "failed".
+#
+# Site-specific settings, exported to the scripts as environment variables:
+#   SGE_PE            parallel environment for threaded jobs   (default: parallel)
+#   SGE_MEM_COMPLEX   memory complex, or 'none'                (default: h_vmem)
+#   SGE_MEM_FREE_TOO  also request mem_free as a dispatch filter (default: unset)
+#   SGE_LOGDIR        where qsub writes job logs
+
+executor: cluster-generic
+
+cluster-generic-submit-cmd: >-
+  bash config/sge-generic/qsub_submit.sh
+  {rule} {threads} {resources.mem_mb} {resources.runtime} {resources.sge_queue}
+cluster-generic-status-cmd: "bash config/sge-generic/qsub_status.sh"
+cluster-generic-cancel-cmd: "qdel"
+cluster-generic-cancel-nargs: 100
+
+jobs: 200
+use-conda: true
+conda-frontend: mamba
+rerun-incomplete: true
+keep-going: true
+printshellcmds: true
+restart-times: 2
+latency-wait: 60
+max-status-checks-per-second: 1     # be kind to qmaster; qstat is not free
+
+default-resources:
+  runtime: 120                       # minutes -> h_rt
+  mem_mb: 8000                       # TOTAL for the job; divided by threads
+  sge_queue: "standard.q"
+
+# Per-rule overrides. Names must match rule names in workflow/rules/*.smk;
+# tests/run_tests.sh checks them, because Snakemake ignores a typo silently.
+# Routing rule: <= ~20 h on standard.q (ceiling 24 h), everything else long.q.
+set-resources:
+  run_dbcan:
+    mem_mb: 16000
+    runtime: 240
+  run_antismash:
+    mem_mb: 24000
+    runtime: 720
+  run_amrfinder:
+    mem_mb: 8000
+    runtime: 120
+  scaffold:                          # 320 GB / 8 slots = 40 GB per slot
+    mem_mb: 320000
+    runtime: 1440
+    sge_queue: "long.q"
+  phyloglm_chunk:
+    mem_mb: 32000
+    runtime: 360
+  species_profiles:
+    mem_mb: 64000
+    runtime: 240
+  ordination:
+    mem_mb: 64000
+    runtime: 240
+  mash_dereplicate:
+    mem_mb: 16000
+    runtime: 240
+  panaroo_species:
+    mem_mb: 32000
+    runtime: 720
+  gubbins_species:
+    mem_mb: 16000
+    runtime: 720
+  iqtree_species:
+    mem_mb: 16000
+    runtime: 2880
+    sge_queue: "long.q"
+  clade_panaroo:
+    mem_mb: 64000
+    runtime: 4320
+    sge_queue: "long.q"
+  scoary_run:
+    mem_mb: 32000
+    runtime: 720
+  clade_scoary_run:
+    mem_mb: 32000
+    runtime: 720
+  selection_hyphy:
+    mem_mb: 16000
+    runtime: 2880
+    sge_queue: "long.q"
+
+# Slots each rule actually uses. Snakemake takes threads from each rule's
+# `threads:` directive unless overridden here, and the SGE executor passes that
+# number to `-pe parallel N` -- so it is also the divisor for the per-slot h_vmem
+# request. Four rules (scaffold, phyloglm_chunk, species_profiles, ordination)
+# declare no `threads:` at all and would silently get 1; their parallelism comes
+# from chunking, not from slots, so 1 is correct and the whole mem_mb lands on a
+# single slot. Stating every value here means the request and the tool agree.
+set-threads:
+  run_dbcan: 8
+  run_antismash: 8
+  run_amrfinder: 4
+  scaffold: 1              # single-threaded tree pruning; memory is the constraint
+  phyloglm_chunk: 1        # phylolm is single-threaded; parallelism = feature chunks
+  species_profiles: 1
+  ordination: 1
+  mash_dereplicate: 4
+  panaroo_species: 8
+  gubbins_species: 8
+  iqtree_species: 8
+  clade_panaroo: 8
+  scoary_run: 8
+  clade_scoary_run: 4
+  selection_hyphy: 4
