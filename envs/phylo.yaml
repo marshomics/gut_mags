@@ -1,0 +1,9 @@
+name: hgn-phylo
+channels: [conda-forge, bioconda]
+dependencies:
+  - gtdbtk=2.4.0          # de-novo placement of unplaced species onto GTDB scaffold
+  - fasttree=2.1.11       # optional fallback for grafting subtrees
+  - iqtree=2.3            # optional fallback for marker-gene tree refinement
+  - mash=2.3              # representative dereplication sanity checks
+  - dendropy=4.6
+  - ete3=3.1.3

@@ -1,0 +1,11 @@
+name: hgn-transition
+channels: [conda-forge, bioconda]
+dependencies:
+  - panaroo=1.5             # pangenome + core genome alignment (annotation-error tolerant)
+  - gubbins=3.3            # recombination detection/masking on the core alignment
+  - iqtree=2.3             # ML tree: ModelFinder + UFBoot + SH-aLRT + ASC
+  - mash=2.3               # strain dereplication (clonal-sampling control)
+  - snp-sites=2.5          # extract SNP alignment / count constant sites
+  - mafft=7.5
+  - seqkit=2.8
+  - clonalframeml=1.13     # alternative recombination caller

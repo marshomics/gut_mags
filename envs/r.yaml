@@ -1,0 +1,40 @@
+name: hgn-r
+channels: [conda-forge, bioconda]
+dependencies:
+  - r-base=4.3
+  - r-tidyverse=2.0
+  - r-data.table=1.15
+  - r-ape=5.8             # phylogenetics core
+  - r-phylolm=2.6         # phyloglm / phylolm (phylogenetic GLM, PGLS)
+  - r-phytools=2.3        # stochastic mapping, signal
+  - r-geiger=2.0          # comparative methods
+  - r-caper=1.0           # phylo D statistic (phylo.d)
+  - r-picante=1.8         # community phylogenetics
+  - r-vegan=2.6           # PERMANOVA, betadisper, varpart, rarefaction
+  - r-ggtree=3.10         # tree figures (bioconda)
+  - bioconductor-ggtree=3.10
+  - r-ggplot2=3.5
+  - r-ggnewscale=0.4
+  - r-svglite=2.1         # SVG with selectable/editable text
+  - r-cowplot=1.1
+  - r-patchwork=1.2
+  - r-rcolorbrewer=1.1
+  - r-pheatmap=1.0
+  - r-matrixstats=1.3
+  - r-broom=1.0
+  - r-optparse=1.7         # command-line parsing
+  - r-yaml=2.3             # read config/config.yaml (every R script)
+  - r-arrow=16.0           # read parquet feature tables
+  - r-phangorn=2.11        # parsimony / phyDat (ancestral_niche.R)
+  - r-permute=0.9          # how() permutation designs (indicspecies)
+  - r-jsonlite=1.8         # write_json (diversification_rate.R)
+  - r-indicspecies=1.7     # IndVal.g indicator-taxa analysis
+  - r-betapart=1.6         # beta-diversity turnover/nestedness partition
+  - r-corhmm=2.8           # Mk ancestral-state models (ER/ARD) for niche transition
+  - r-castor=1.8           # fast ASR / tree stats on larger within-species trees
+  - bioconductor-treeio=1.26  # read IQ-TREE/Gubbins trees with support values
+  - bioconductor-fgsea=1.28   # preranked GSEA for functional enrichment
+  # gene gain/loss on the transition branch uses phangorn/castor parsimony ASR
+  # (no external panstripe dependency); config transition.geneloss.tool selects it.
+
+

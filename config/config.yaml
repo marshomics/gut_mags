@@ -1,0 +1,669 @@
+# =============================================================================
+# config.yaml  --  Human gut niche signature pipeline
+# =============================================================================
+# Every parameter that affects a scientific result is exposed here, with the
+# rationale written next to it. Nothing scientific is hard-coded in the scripts.
+# Sensitivity sweeps (see `sensitivity:` block) re-run key steps across ranges
+# of the most consequential thresholds so reviewers can see result stability.
+#
+# Paths are deliberately left as placeholders (CHANGE_ME). The pipeline does
+# not assume any layout of your annotation outputs; you declare it here.
+# =============================================================================
+
+project_name: "human_gut_niche"
+seed: 1729                      # global RNG seed; propagated to every stochastic step
+results_dir: "results"          # override per sensitivity run (e.g. results_hq_only)
+
+# -----------------------------------------------------------------------------
+# 1. INPUTS
+# -----------------------------------------------------------------------------
+inputs:
+  # Master metadata table (the file you provided). Tab-delimited.
+  metadata: "CHANGE_ME/total_metadata_qc_bbmap_animals_extra.txt"
+
+  # Column names in the metadata table. Edit only if you rename columns.
+  columns:
+    genome_id: "genome"
+    niche: "source"            # values expected: human, animal, free
+    quality_completeness: "Completeness"
+    quality_contamination: "Contamination"
+    quality_score: "qc"        # == Completeness - 5*Contamination (verified)
+    gc: "gc_avg"
+    cds_number: "cds_number"
+    genome_size: "genome_size"
+    genome_size_corrected: "corrected_genome_size"
+    n_contigs: "n_contigs"
+    n50: "ctg_L50"
+    gtdb_ranks: ["gtdb_domain","gtdb_phylum","gtdb_class","gtdb_order","gtdb_family","gtdb_genus","gtdb_species"]
+    species: "gtdb_species"
+    host_common_name: "common_name_x"   # populated for animal niche only
+    host_ranks: ["domain","kingdom","phylum","class","order","family"]  # host taxonomy (animal)
+    western_nonwestern: "western_nonwestern"   # human lifestyle label (add to metadata later)
+
+  niche_levels: ["human","animal","free"]   # canonical order used in every plot/table
+  focal_niche: "human"                      # the niche whose signature we are defining
+
+  # --- Where the per-genome annotation files are. Two ways to say it. ---------
+  #
+  # (1) MANIFEST. A tab-separated table, one row per genome, giving the full path
+  #     to each file. Use this when the layout is irregular: different
+  #     directories per study, original basenames, symlink farms. Leave as null
+  #     (or CHANGE_ME) to use the templates below instead.
+  #
+  #       genome        prokka_faa                   eggnog                       kofam
+  #       GUT000001     /data/a/GUT000001.faa        /data/a/GUT000001.emapper..   /data/a/GUT000001.kofam.tsv
+  #       FREE000051    /scratch/env/FREE51.faa      /scratch/env/FREE51.emapper.. /scratch/env/FREE51.ko.tsv
+  #
+  #     Recognised columns (case-insensitive, aliases in brackets): genome
+  #     [genome_id, id, file]; assembly [fna, fasta]; prokka_gff [gff];
+  #     prokka_faa [faa, proteins]; prokka_ffn [ffn, cds]; eggnog [emapper];
+  #     kofam; and optionally dbcan_overview, antismash_json, amrfinder_tsv.
+  #     Unrecognised columns are ignored with a warning. A manifest may be
+  #     PARTIAL: any kind it omits falls back to the template below, so you can
+  #     list the awkward files and template the rest.
+  #
+  #     Every QC-passed genome must appear in the manifest. A genome silently
+  #     skipped for want of a path would bias every prevalence estimate, so a
+  #     missing row is a hard error.
+  #
+  # (2) TEMPLATES. Paths containing {genome}, expanded per genome id.
+  #
+  # Either way, resolve_annotation_paths.py writes results/00_ingest/
+  # annotation_paths.tsv once, and every downstream rule reads only that.
+  annotation_manifest: null      # e.g. "CHANGE_ME/annotation_manifest.tsv"
+
+  # Which kinds must resolve for every genome before the run starts. Add
+  # 'assembly' and 'prokka_gff' if you intend to run transition_all or the
+  # de-novo annotation rules; add 'prokka_ffn' for the HyPhy selection analysis.
+  required_annotations: ["prokka_faa", "eggnog", "kofam"]
+
+  # Check that the declared files exist, before any cluster time is spent.
+  #   all    stat every path (slow at 581k genomes x 6 kinds)
+  #   sample stat validate_paths_n random genomes (default)
+  #   none   trust the manifest
+  validate_paths: "sample"
+  validate_paths_n: 200
+
+  # Per-genome annotation locations. Use {genome} as the placeholder for the
+  # genome id. The pipeline ingests what you already have and only *generates*
+  # the layers you do not (see functional_annotation.generate).
+  annotations:
+    assemblies_fasta:  "CHANGE_ME/assemblies/{genome}.fna"        # nucleotide assembly
+    prokka_gff:        "CHANGE_ME/prokka/{genome}/{genome}.gff"   # Prokka GFF3
+    prokka_faa:        "CHANGE_ME/prokka/{genome}/{genome}.faa"   # Prokka proteins
+    prokka_ffn:        "CHANGE_ME/prokka/{genome}/{genome}.ffn"   # Prokka nucleotide CDS (for dN/dS)
+    eggnog_annotations: "CHANGE_ME/eggnog/{genome}.emapper.annotations" # eggNOG-mapper v2 .annotations
+    kofam_annotations: "CHANGE_ME/kofam/{genome}.kofam.tsv"       # KofamScan detail-tsv (mapper or --format detail)
+    # Outputs WRITTEN by this pipeline's de-novo annotation rules (and read back
+    # by the parser). Keep {genome}; results/ is created under the workdir.
+    dbcan_overview:    "results/annot/dbcan/{genome}/overview.txt"
+    antismash_json:    "results/annot/antismash/{genome}/{genome}.json"
+    amrfinder_tsv:     "results/annot/amrfinder/{genome}.tsv"
+  kofam_format: "detail-tsv"   # one of: detail-tsv | mapper. Parser auto-detects KO column.
+
+# -----------------------------------------------------------------------------
+# 2. GENOME QUALITY CONTROL
+# -----------------------------------------------------------------------------
+# The table is already filtered to Completeness >= 50 and Contamination < 10.
+# We re-apply explicit, documented thresholds so the analysis set is defined
+# by THIS pipeline, not by upstream choices.
+qc:
+  min_completeness: 50.0       # MIMAG medium-quality floor
+  max_contamination: 5.0       # stricter than the table's <10; limits false gene calls
+  min_quality_score: 50.0      # Completeness - 5*Contamination >= 50 (Parks et al. 2018)
+  min_n50: 5000                # drop highly fragmented assemblies (gene fragmentation -> annotation artefacts)
+  max_contigs: 1000            # drop extreme fragmentation
+  drop_missing_genome_stats: true
+  # High-quality subset definition, used as a sensitivity analysis (see sensitivity:)
+  hq_completeness: 90.0
+  hq_contamination: 5.0
+
+# -----------------------------------------------------------------------------
+# 3. SPECIES UNITS  (controls the strains-per-species confounder)
+# -----------------------------------------------------------------------------
+# The species is the primary unit of every comparative test. Genomes are
+# collapsed to species so that a 9,606-genome species cannot outweigh a
+# singleton. gtdb_species strings (including GTDB placeholder clusters such as
+# 's__Genus [species N]') are treated as species clusters.
+species:
+  unit_column: "gtdb_species"
+  # A species' functional repertoire is summarised by prevalence across its
+  # conspecific genomes (fraction of genomes carrying each feature). A feature
+  # is "present in the species" if prevalence >= presence_threshold.
+  presence_threshold: 0.5      # soft-core. Swept in sensitivity (0.1 / 0.5 / 0.9).
+  min_genomes_for_prevalence: 1
+  # Representative genome per species (used for de-novo annotation + tree mapping):
+  representative:
+    rank_by: ["quality_score","n50","genome_size"]   # descending priority
+  # Minimum genomes a species must have to enter prevalence-based profiles when
+  # we want stable estimates (singletons still counted as presence/absence):
+  stable_prevalence_min_genomes: 3
+
+# -----------------------------------------------------------------------------
+# 4. NICHE OCCUPANCY & SPECIALIST DEFINITION (controls niche-mixing)
+# -----------------------------------------------------------------------------
+occupancy:
+  # A species "occupies" a niche if it has at least this many genomes there.
+  min_genomes_per_niche: 1
+  # Primary contrast restricts to single-niche specialists (cleanest signal of
+  # "what distinguishes human-gut species"). Generalists are analysed separately.
+  primary_contrast: "specialists_only"   # specialists_only | primary_niche_majority
+  # For multi-niche species under primary_niche_majority, niche = the niche
+  # holding the majority of that species' genomes.
+
+# -----------------------------------------------------------------------------
+# 4b. TAXONOMY-BY-NICHE  (the current focus: species/taxonomic structure)
+# -----------------------------------------------------------------------------
+# Every taxonomic comparison is done species-weighted (each species counts once)
+# as the primary view, with genome-weighted shown alongside to expose strain
+# sampling bias. Sampling differences between niches are handled by rarefaction
+# and by null models, never by comparing raw counts.
+taxonomy:
+  ranks: ["gtdb_phylum","gtdb_class","gtdb_order","gtdb_family","gtdb_genus","gtdb_species"]
+  primary_rank: "gtdb_species"
+  weighting: "species"            # primary weighting; genome-weighted also reported
+  # specialist if standardised Levins breadth < cutoff (near single-niche)
+  specialist_breadth_cutoff: 0.25
+  null_iterations: 999            # permutation/randomisation reps for taxonomy nulls
+  # how a (possibly multi-niche) species is assigned to one niche for grouping
+  niche_assignment: "primary"     # primary (majority of genomes) | specialist (single-niche only)
+  indicator:
+    func: "IndVal.g"             # group-size-corrected IndVal (handles unequal niche sizes)
+    min_group_species: 5
+    permutations: 999
+    fdr: "BH"
+  enrichment:
+    test: "fisher"              # fisher | gtest ; per-taxon 2x2 vs the rest, FDR-corrected
+    min_taxon_species: 5         # only test taxa with >= this many species (stability)
+    fdr: "BH"
+  overlap_null:
+    # randomise the species x niche occupancy matrix preserving BOTH margins
+    # (each species keeps its number of occupied niches; each niche keeps its
+    # richness), then compare observed shared-species counts to the null.
+    model: "fixed_fixed"
+    iterations: 999
+  phylo_community:
+    # per-niche phylogenetic structure on the GTDB tree (needs scaffold)
+    null_model: "taxa.labels"    # primary null; richness null run as a check
+    runs: 999
+    abundance_weighted: false     # presence-based to avoid strain bias
+  diversity:
+    estimators: ["chao1","ace"]  # asymptotic richness + observed; coverage-based rarefaction
+    hill_q: [0, 1, 2]
+  novelty:
+    placeholder_column: "species_is_placeholder"
+    rarefy: true                  # compare novelty at matched sampling effort
+  host:
+    min_genomes_per_host: 20      # hosts with enough genomes for host-resolved analysis
+    rarefy_hosts_to: "min"        # equalise effort across hosts
+
+# -----------------------------------------------------------------------------
+# 5. HOST IMBALANCE (animal niche is ~80% mouse)
+# -----------------------------------------------------------------------------
+host:
+  # Aggregate animal genomes to host species before they contribute to the
+  # animal niche profile, so one over-sampled host does not dominate.
+  balance_by_host: true
+  host_column: "common_name_x"
+  # Random effect / stratification by host in models that include animal genomes.
+  use_host_random_effect: true
+  # Optional: down-weight or cap the dominant host in resampling.
+  cap_dominant_host_fraction: 0.5   # in balanced resampling, <=50% of animal draws from one host
+
+# -----------------------------------------------------------------------------
+# 6. FUNCTIONAL ANNOTATION
+# -----------------------------------------------------------------------------
+functional_annotation:
+  layers: ["ko","module","pathway","pfam","cog","cazyme","bgc","amr"]
+  # KO source priority. KOfam (curated HMM thresholds) is primary; eggNOG KO is
+  # the concordance cross-check. Report agreement between the two.
+  ko_primary: "kofam"
+  ko_crosscheck: "eggnog"
+  cazyme_primary: "dbcan"      # dedicated dbCAN run; eggNOG CAZy as cross-check
+  cazyme_crosscheck: "eggnog"
+  # Layers to generate de novo (not in your existing annotation set):
+  generate:
+    dbcan: true                # CAZymes, run on representatives (config.scope below)
+    antismash: true            # BGCs, slow -> representatives only
+    amrfinder: true            # AMR genes
+  scope:
+    dbcan: "all_genomes"       # all_genomes | representatives  (CAZyme prevalence wants all)
+    antismash: "representatives"
+    amrfinder: "all_genomes"
+  # KEGG module completeness: fraction of each module's blocks present.
+  module_completeness_threshold: 0.66   # module "present" if >= this fraction complete
+  # Rare-feature filter for differential testing (prevalence filter applied
+  # PER niche to avoid biasing toward the larger niche):
+  min_prevalence_any_niche: 0.05   # feature must reach 5% prevalence in >=1 niche to be tested
+
+# -----------------------------------------------------------------------------
+# 7. PHYLOGENY  (GTDB reference scaffold)
+# -----------------------------------------------------------------------------
+phylogeny:
+  approach: "gtdb_scaffold"
+  gtdb_release: "R220"
+  gtdb_data_dir: "CHANGE_ME/gtdb/release220"   # contains bac120/ar53 reference trees + taxonomy
+  bac120_tree: "CHANGE_ME/gtdb/release220/bac120_r220.tree"
+  ar53_tree:   "CHANGE_ME/gtdb/release220/ar53_r220.tree"
+  bac120_taxonomy: "CHANGE_ME/gtdb/release220/bac120_taxonomy_r220.tsv"
+  ar53_taxonomy:   "CHANGE_ME/gtdb/release220/ar53_taxonomy_r220.tsv"
+  # Species not present as GTDB reference tips (de-novo/placeholder clusters):
+  unplaced_species: "gtdbtk_denovo"   # gtdbtk_denovo (graft via GTDB-Tk markers) | drop (analyse only placed tips)
+  gtdbtk_db: "CHANGE_ME/gtdbtk/release220"
+  # Domain handling: bacteria and archaea are analysed on separate trees and
+  # results combined; cross-domain functional comparison reported separately.
+  separate_domains: true
+
+# -----------------------------------------------------------------------------
+# 7b. WITHIN-SPECIES NICHE TRANSITION  (separate target: `snakemake transition_all`)
+# -----------------------------------------------------------------------------
+# For species found in >1 niche with enough high-quality strains, test whether
+# one niche is a recent acquisition relative to another. Every step is the
+# defensible choice: Panaroo core genome, Gubbins recombination masking, an
+# outgroup-rooted IQ-TREE with model selection and support, ancestral-state
+# polarization of niche, within-population SFS/diversity on recombination-free
+# sites with strain dereplication and equal-n subsampling, and a split/migration
+# model. Runs per species, then aggregates across species.
+transition:
+  enabled: true
+  # --- which species qualify ------------------------------------------------
+  min_strains_per_niche: 10     # need this many HQ strains in EACH of >=2 niches
+  min_niches_occupied: 2
+  completeness_min: 90.0        # within-species genomes must be near-complete
+  contamination_max: 5.0
+  max_species: 0                # 0 = all qualifying; else cap by total strains (compute)
+  # --- remove clonal/epidemic oversampling (else low diversity is faked) -----
+  dereplicate:
+    enabled: true
+    method: "mash"
+    mash_kmer: 21
+    mash_sketch: 10000
+    max_distance: 0.0001        # collapse strains closer than ~99.99% ANI; keep best-quality
+  # --- root the tree (no root => no directionality) --------------------------
+  outgroup:
+    strategy: "nearest_sister_in_dataset"   # nearest_sister_in_dataset | midpoint
+    # nearest sister species chosen by patristic distance on the GTDB scaffold;
+    # its representative genome is added to the pangenome and used to root.
+  # --- pangenome -------------------------------------------------------------
+  pangenome:
+    tool: "panaroo"            # panaroo (recommended) | ingest (use existing Roary/Panaroo csv+aln)
+    clean_mode: "strict"
+    core_threshold: 0.98        # soft-core fraction (sensitivity: also 0.95, 1.0)
+    aligner: "mafft"
+    ingest_dir: ""              # if tool=ingest: dir with gene_presence_absence.csv + core aln
+  # --- recombination (mandatory before any tree/popgen) ----------------------
+  recombination:
+    tool: "gubbins"            # gubbins | clonalframeml | none(NOT recommended)
+    iterations: 5
+    min_snps: 3
+  # --- phylogeny -------------------------------------------------------------
+  tree:
+    tool: "iqtree"
+    model: "MFP"               # ModelFinder Plus
+    ufboot: 1000
+    alrt: 1000
+    asc: true                  # ascertainment-bias correction (SNP alignment)
+  # --- ancestral niche state -------------------------------------------------
+  ancestral:
+    models: ["ER","ARD"]       # Mk equal-rates vs all-rates-different; pick by AIC
+    simmap_reps: 500
+    transition_depth_metric: "node_age"   # shallow transitions => recent acquisition
+  # --- population genetics per niche ----------------------------------------
+  popgen:
+    subsample_to: "min"        # equalise strains per niche each bootstrap draw
+    bootstrap: 500
+    min_segregating_sites: 20
+  # --- accessory gene gain/loss ---------------------------------------------
+  accessory:
+    # Fisher on the full data has more power in whichever niche has more strains,
+    # so the raw "genes enriched in X vs Y" counts are not comparable and would
+    # bias the gene-gain evidence line. Counts are therefore taken from balanced
+    # draws (both populations subsampled to the smaller one); with equal row
+    # margins the two-sided exact p is exactly twice the smaller hypergeometric
+    # tail. A gene counts when it is significant in >= min_support of draws.
+    balanced_iterations: 200
+    min_support: 0.5
+  # --- demography (split time, Ne, directional migration) --------------------
+  demography:
+    enabled: true
+    # Joint folded SFS, Fst, dxy, da and a coalescent split estimate are ALWAYS
+    # computed in Python. Full IM modelling runs only if a fastsimcoal2 binary
+    # is provided; otherwise that step is skipped with a clear note.
+    mutation_rate_per_site_per_year: null   # e.g. 1.0e-6 for calendar time; null => coalescent units
+    fastsimcoal2_bin: ""       # path to fsc2 binary (optional)
+    fsc_models: ["SI","IM","AM"]            # strict isolation / IM / ancient migration
+    fsc_runs: 50
+  # --- gene gain/loss on the transition branch (ties to function) ------------
+  geneloss:
+    enabled: true
+    tool: "parsimony"          # parsimony ASR of pangenome P/A on the tree (phangorn/castor)
+  # --- selection on the transition branch (optional, heavy) ------------------
+  selection:
+    enabled: false
+    tool: "hyphy"              # BUSTED / RELAX along the niche-transition branch
+  # --- cross-species meta-analysis ------------------------------------------
+  meta:
+    direction_test: "binomial"  # sign/binomial test for a consistent transition direction
+
+# -----------------------------------------------------------------------------
+# 8. STATISTICS  (applied identically across every functional layer)
+# -----------------------------------------------------------------------------
+stats:
+  # Contrasts evaluated by the differential trio (phyloglm/CMH/resampling) AND,
+  # where listed under scoary.contrasts, by Scoary2 as a 4th method. Supported
+  # forms: "<niche>_vs_rest", "<niche>_vs_<niche>", and "host_vs_free" (host =
+  # human+animal). Running the trio on all of these gives a uniform 4-method
+  # consensus per contrast; trim this list if compute is tight.
+  contrasts: ["human_vs_rest","human_vs_animal","animal_vs_rest","free_vs_rest","host_vs_free"]
+  # Covariates entered into EVERY model, so quality and size never masquerade
+  # as niche signal.
+  covariates: ["completeness","log10_genome_size","gc"]
+  fdr_method: "BH"             # Benjamini-Hochberg; q-value reported alongside
+  fdr_alpha: 0.05
+  min_abs_log2_or: 1.0         # effect-size floor for "signature" calls (|log2 OR| >= 1)
+  # Method A: phylogenetic GLM (phylolm::phyloglm), binary feature ~ niche + covariates
+  phyloglm:
+    btol: 20
+    boot: 0                    # parametric bootstrap reps for CIs (0 = analytic SE; set 100+ on cluster)
+  # Method B: clade-stratified Cochran-Mantel-Haenszel
+  cmh:
+    stratify_rank: "gtdb_genus"   # match like-with-like within genus; falls back to family if genus singleton
+    min_stratum_size: 4
+  # Method C: balanced resampling (equalises species-per-niche AND strains-per-species)
+  resampling:
+    iterations: 1000
+    species_per_niche: "min"   # 'min' = size of smallest niche, or an integer
+    genomes_per_species: 1     # draw one genome per species per iteration
+    ci: 0.95
+  # A feature is a CONSENSUS signature only if it passes every required method
+  # that was run for that contrast. Scoary2 is a 4th method where available
+  # (consensus is tolerant: a method is required only if its input is present).
+  consensus:
+    require_methods: ["phyloglm","cmh","resampling","scoary"]
+    require_same_direction: true
+    # A method can be UNTESTABLE for a given feature, which is not the same thing
+    # as non-significant. CMH is undefined when no clade contains both groups;
+    # Scoary drops invariant features; phyloglm can fail to converge. Letting an
+    # undefined test silently veto would make the consensus unsatisfiable exactly
+    # where the biology is strongest (features confined to niche-specific
+    # clades). So the rule is: every method that CAN be applied must agree, at
+    # least `min_applicable_methods` must be applicable, and `anchor_method` must
+    # be one of them. Features passing ALL required methods are tier1; features
+    # whose applicable methods agree but where >=1 was untestable are tier2 and
+    # counted separately, so the manuscript can state both numbers.
+    min_applicable_methods: 2
+    anchor_method: "phyloglm"    # must be applicable AND significant for any call
+    strict_all_methods: false    # true = only tier1 counts as a consensus signature
+  # Null + positive controls
+  permutation_null:
+    enabled: true
+    iterations: 1000           # niche labels permuted across species tips (phylogeny-aware)
+  positive_controls:
+    # Sanity features expected to be human-gut enriched; pipeline flags if absent.
+    ko: ["K01186"]             # sialidase (host glycan foraging) - example, edit freely
+    cazyme: ["GH33","GH20","GH29","GH95","GH101"]  # host-glycan / mucin-associated families
+
+# -----------------------------------------------------------------------------
+# 8b. SCOARY2 PAN-GWAS  (4th association method; part of `functional_all`)
+# -----------------------------------------------------------------------------
+# Microbial pan-GWAS with the pairwise-comparisons structure correction. Run two
+# ways: (1) species-level on the functional presence matrices (KO/Pfam/CAZyme/...)
+# with the GTDB species tree, reusing the differential_prep group definitions and
+# feeding results back into the consensus as a 4th method; (2) clade-stratified on
+# de-novo Panaroo pangenomes per genus, for real ortholog-family resolution.
+scoary:
+  enabled: true
+  # Contrasts Scoary2 tests at the species level. Each must also be producible by
+  # differential_prep (so the genes/traits/tree are shared). host_vs_free groups
+  # human+animal (host-associated) against free-living.
+  contrasts: ["human_vs_rest","animal_vs_rest","free_vs_rest","host_vs_free"]
+  layers: ["ko","module","pfam","cog","cazyme","bgc","amr"]
+  niche_assignment: "specialist"   # binarise niche via specialist (single-niche) | primary
+  # Scoary2 CLI parameters (Roder et al. 2024). Defaults follow the docs'
+  # recommendations for multi-species datasets.
+  n_permut: 1000               # label-switching permutation: low p => not merely lineage-specific
+  worst_cutoff: 0.05           # drop traits with no gene beating this 'worst' pairwise p (multi-species)
+  max_genes: 0                 # 0 = all; set e.g. 5000 to cap Fisher genes on very large sets
+  multiple_testing: "fdr_bh:0.05"
+  # Significance for a Scoary2 "hit": corrected Fisher q, the permutation p, the
+  # number of supporting pairwise comparisons (the structure-aware evidence), and
+  # the 'best' pairwise p must all pass.
+  fisher_q_max: 0.05
+  empirical_p_max: 0.05
+  min_supporting_pairs: 3
+  best_pairwise_p_max: 0.05
+  # Clade-stratified pan-GWAS on real ortholog families
+  clade:
+    enabled: true
+    rank: "gtdb_genus"          # orthologs comparable within a genus
+    min_species_per_niche: 5
+    min_niches: 2
+    top_clades: 20              # cap number of genera (compute)
+    core_threshold: 0.95
+    contrasts: ["human_vs_rest","host_vs_free"]   # lighter set within clades
+
+# -----------------------------------------------------------------------------
+# 8c. FUNCTIONAL ENRICHMENT of niche-associated features (part of `functional_all`)
+# -----------------------------------------------------------------------------
+# Tests whether the consensus niche-signature features over-represent higher-level
+# functional categories (KEGG pathways/modules/BRITE, GO, COG groups, CAZyme
+# classes/substrates, BGC and AMR classes). Two methods are run and compared:
+#   ORA  hypergeometric over-representation of the signature set, with the
+#        TESTED features (not the whole database) as the background, run per
+#        direction (enriched vs depleted) so opposing signals do not cancel.
+#   GSEA threshold-free preranked GSEA (fgsea) on the signed effect across all
+#        tested features, which uses the full ranking and needs no cutoff.
+# A category reported as enriched should ideally be significant by both.
+enrichment:
+  enabled: true
+  methods: ["ora", "gsea"]
+  contrasts: ["human_vs_rest","animal_vs_rest","free_vs_rest","host_vs_free","human_vs_animal"]
+  # category systems tested per feature layer. kegg_pathway needs the canonical
+  # KO->pathway map (resources/fetch_kegg_genesets.py); kegg_module is built from
+  # the module definitions already fetched; cazy_class/cog_group/bgc_group are
+  # deterministic (no external data). Add go/brite/pfam_clan by dropping the
+  # matching map file into canonical_dir (feature<TAB>category_id[<TAB>name]).
+  systems:
+    ko: ["kegg_pathway","kegg_module"]
+    pfam: ["pfam_clan"]
+    cog: ["cog_group"]
+    cazyme: ["cazy_class","cazy_substrate"]
+    bgc: ["bgc_group"]
+    amr: ["amr_class"]
+  # Membership sources. Deterministic systems (cazy_class, cog_group, bgc_group)
+  # need no external data. Canonical maps for the richer systems are fetched once
+  # (resources/fetch_kegg_genesets.py -> canonical_dir); if a map is absent that
+  # system is skipped with a warning rather than guessed.
+  membership_source: "auto"          # auto = canonical files if present, else skip
+  canonical_dir: "resources/genesets"
+  cazy_substrate_map: "resources/genesets/cazy_substrate.tsv"   # optional family->substrate
+  amr_class_map: "resources/genesets/amr_class.tsv"             # optional gene->drug class
+  pfam_clan_map: "resources/genesets/pfam_clans.tsv"           # optional Pfam->clan
+  min_set_size: 5
+  max_set_size: 1000
+  fdr_alpha: 0.05
+  rank_metric: "signed_neglogp"      # sign(consensus log2 OR) * -log10(phyloglm q)
+  directions: ["up", "down"]         # ORA run separately for enriched / depleted hits
+  gsea_permutations: 10000
+
+# -----------------------------------------------------------------------------
+# 8g. COMMUNITY & METABOLIC INTERACTION  (target `snakemake community_all`)
+# -----------------------------------------------------------------------------
+# Uses the per-genome metabolic/trait prediction tables in input/. Every table is
+# per genome (a strain); the two confounders are handled consistently: strains are
+# collapsed to species (species-level prevalence) and, for any community-pool
+# metric, niches are rarefied to equal species number. The microbial "which are
+# human-specific" question runs the new layers (auxotrophy/carbon/trait/module)
+# through the same 4-method consensus; the community-level interaction metrics are
+# added on top.
+community:
+  enabled: true
+  inputs:
+    genome_map: "CHANGE_ME/input/genome_map.tsv"      # G-id <-> Prokka faa path (original id in basename)
+    auxotrophy: "CHANGE_ME/input/aa.presence.tsv"     # 1 = can synthesise (prototroph)
+    carbon:     "CHANGE_ME/input/carbon.presence.tsv" # 1 = can utilise as carbon source
+    modules:    "CHANGE_ME/input/predictions.tsv"     # wide KEGG module presence (original ids)
+    traits:     "CHANGE_ME/input/predictions_reliable.tsv"  # predicted phenotypes
+  # species-level collapse: a capability is "present in the species" if >= this
+  # fraction of the species' strains have it; auxotrophy is the inverse.
+  presence_threshold: 0.5
+  # these become extra layers in the differential + consensus stack
+  differential_layers: ["auxotrophy", "carbon", "trait", "modulep"]
+  # amino acids treated as auxotrophy features (chorismate is a precursor, kept separate)
+  amino_acids: ["arg","asn","cys","gln","gly","his","ile","leu","lys","met","phe","pro","ser","thr","trp","tyr","val"]
+  # traits highlighted for the human-gut community phenotype
+  key_traits: ["Anaerobe","Facultative","Aerobe","Spore formation","Bile-susceptible","Motile","Gram positive","Gram negative"]
+  rarefaction:
+    species_per_niche: "min"       # equalise species per niche for every community-pool metric
+    bootstrap: 200
+  cross_feeding:
+    metabolite_map: "resources/genesets/metabolite_exchange.tsv"  # curated, editable
+    # acetate has a grounded producer module (M00579); other organic acids use a
+    # fermenter-trait proxy for the producer side (flagged in the map).
+
+# -----------------------------------------------------------------------------
+# 8e. FUNCTIONAL REDUNDANCY  (human gut; target `snakemake redundancy_all`)
+# -----------------------------------------------------------------------------
+# How redundant is the human gut's functional repertoire (functions carried by
+# many species)? Species is the unit; comparisons are rarefied to equal sampling.
+redundancy:
+  enabled: true
+  niche: "human"
+  layers: ["ko","pfam","cazyme","cog"]
+  core_fraction: 0.9            # function 'core' if carried by >= this fraction of species
+  rare_max_species: 1           # 'rare' if carried by <= this many species
+  accumulation:
+    steps: 25
+    bootstrap: 100              # species subsamples for the accumulation curves
+  ricotta:
+    abundance: "equal"          # equal | prevalence (species weighting for D and Rao Q)
+    distance: "jaccard"         # functional distance among species
+    max_species: 1000           # subsample cap (pairwise distances are O(S^2)); bootstrapped
+  phylo_redundancy_rank: "gtdb_family"   # carrier spread across families = breadth proxy
+  by_population: true           # also compute redundancy within Western / non-Western
+
+# -----------------------------------------------------------------------------
+# 8f. POPULATION: WESTERN vs NON-WESTERN  (human; target `snakemake western_all`)
+# -----------------------------------------------------------------------------
+# Activates when the western_nonwestern column is present. Asks whether the
+# functional repertoire is conserved despite species turnover between Western and
+# non-Western guts. The western_vs_nonwestern contrast also flows through the
+# 4-method consensus + enrichment automatically when enabled.
+population:
+  enabled: false                # set true AFTER adding the western_nonwestern column
+  column: "western_nonwestern"
+  values:                       # value normalisation (case-insensitive, flexible)
+    western: ["western", "w", "industrialised", "industrialized"]
+    non_western: ["non_western", "non-western", "nonwestern", "nw", "non_industrialised", "rural"]
+  contrast: "western_vs_nonwestern"
+  rarefy: true                  # equalise species per population for turnover/redundancy
+  min_species_per_population: 20
+
+# -----------------------------------------------------------------------------
+# 8d. SYNTHESIS & DRIVERS  (capstone target `snakemake synthesis_all`)
+# -----------------------------------------------------------------------------
+# Integrates every stage to answer the manuscript questions: which species/genes/
+# functions are human-specific, and what drives niche adaptation, functional
+# adaptation and speciation. Sits on top of taxonomy + functional + transition +
+# enrichment and adds the driver analyses that were missing.
+synthesis:
+  enabled: true
+  focal_contrast: "human_vs_rest"
+  # how each human signature is achieved (drivers of adaptation)
+  adaptation_mode:
+    human_prev_min: 0.5            # present in >=50% of human species
+    comparator_prev_gain_max: 0.2  # and <20% of comparator species => 'acquisition/gain'
+    comparator_prev_loss_min: 0.5  # depleted but >=50% comparator => 'loss in human'
+  # does host-association change speciation rate?
+  diversification:
+    enabled: true
+    statistic: "DR"                # Jetz et al. tip diversification rate
+    null_rank: "gtdb_phylum"       # permute niche within this rank for the test
+    permutations: 999
+  # turn "why the human gut" into testable selective-pressure hypotheses
+  ecological_pressures:
+    enabled: true
+    map: "resources/genesets/human_gut_pressures.tsv"   # feature -> pressure (curated, editable)
+    contrasts: ["human_vs_rest","host_vs_free"]
+  # sequence-level selection on human-signature ortholog families
+  selection:
+    enabled: true
+    method: "hyphy"                # BUSTED (episodic positive selection) + RELAX (intensification)
+    foreground_niche: "human"      # branches leading to human-associated tips = test set
+    top_families_per_clade: 30
+    cap_clades: 10
+    hyphy_bin: "hyphy"             # binary on PATH in the selection env
+
+# -----------------------------------------------------------------------------
+# 9. ORDINATION / VARIATION PARTITIONING
+# -----------------------------------------------------------------------------
+ordination:
+  feature_layer: "ko"          # layer used for the main ordination
+  presence_distance: "jaccard" # for binary species x feature matrix
+  abundance_transform: "clr"   # for count matrix: clr | none
+  permanova_permutations: 9999
+  betadisper: true             # guard against dispersion-driven PERMANOVA artefacts
+  varpart_blocks:              # variance partitioned among these explanatory blocks
+    niche: ["niche"]
+    phylogeny: ["phylo_pcoa"]  # leading PCoA axes of patristic distance
+    genome_size: ["log10_genome_size"]
+    quality: ["completeness","contamination"]
+  phylo_pcoa_axes: 10
+  # Ordination is O(n^2) in species; cap per niche with balanced subsampling
+  # (also equalises species-per-niche for this analysis). Set high if memory allows.
+  max_species_per_niche: 1500
+  use_specialists_only: true   # ordinate niche specialists for a clean niche contrast
+
+# -----------------------------------------------------------------------------
+# 10. PHYLOGENETIC COMPARATIVE
+# -----------------------------------------------------------------------------
+comparative:
+  signal_binary: "fritz_purvis_D"     # D statistic for binary traits (niche, feature presence)
+  signal_continuous: ["pagel_lambda","blombergs_K"]
+  pgls_traits: ["cazyme_count","bgc_count","amr_count","genome_size","cds_number"]
+  ancestral_method: "stochastic_mapping"   # simmap; counts independent gains of each signature feature
+  ancestral_reps: 100
+  convergence_min_independent_gains: 3     # call "convergent" if signature feature arose >=3x independently
+  max_features_ancestral: 30               # cap on signature features mapped (compute control)
+  ancestral_transition_model: "ARD"        # all-rates-different (gains != losses); ER as sensitivity
+
+# -----------------------------------------------------------------------------
+# 11. FIGURES
+# -----------------------------------------------------------------------------
+figures:
+  formats: ["png","svg"]
+  dpi: 400
+  svg_editable_text: true      # text stays as <text>, not paths (matplotlib svg.fonttype=none; R svglite)
+  base_font_size: 7            # pt; journal-friendly
+  font_family: "Arial"
+  palette:                     # colour-blind-safe niche palette (Okabe-Ito based)
+    human: "#0072B2"
+    animal: "#D55E00"
+    free: "#009E73"
+  max_heatmap_features: 80     # top signature features shown in the main heatmap
+
+# -----------------------------------------------------------------------------
+# 12. SENSITIVITY SWEEPS  (re-run key steps across these to demonstrate stability)
+# -----------------------------------------------------------------------------
+sensitivity:
+  enabled: true
+  species_presence_threshold: [0.1, 0.5, 0.9]
+  qc_set: ["default","hq_only"]          # default vs Completeness>90 & Contam<5
+  include_mouse: [true, false]           # animal niche with and without mouse dominance
+  phylogenetic_control: ["on","off"]     # show how much phylogeny correction changes calls
+
+# -----------------------------------------------------------------------------
+# 13. COMPUTE
+# -----------------------------------------------------------------------------
+resources:
+  annotation_chunk_size: 2000  # genomes per array-job shard for de-novo annotation
+  feature_chunk_size: 400      # features per phyloglm shard (parallelism)
+  default_threads: 4
+  big_mem_gb: 64
+
+# External reference data the user fetches once (see resources/ and docs/).
+references:
+  kegg_module_def: "resources/kegg_modules.tsv"   # produced by resources/fetch_kegg_modules.py
+  amrfinder_db: "CHANGE_ME/amrfinderplus/db"      # AMRFinderPlus database
+  antismash_db: "CHANGE_ME/antismash/databases"   # antiSMASH databases
+  dbcan_db: "CHANGE_ME/dbcan/db"                   # run_dbcan database directory

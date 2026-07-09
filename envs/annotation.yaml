@@ -1,0 +1,10 @@
+name: hgn-annotation
+channels: [conda-forge, bioconda]
+dependencies:
+  - dbcan=4.1             # CAZyme annotation (run_dbcan; HMMER+DIAMOND+dbCAN-sub consensus)
+  - hmmer=3.4
+  - diamond=2.1
+  - ncbi-amrfinderplus=3.12   # AMR gene detection
+  - antismash=7.1         # biosynthetic gene clusters
+  - prodigal=2.6.3        # ORF calls where needed by tools
+  - seqkit=2.8

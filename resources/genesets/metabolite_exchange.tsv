@@ -1,0 +1,9 @@
+metabolite	consumer_carbon	producer_module	producer_trait	note
+acetate	acetate	M00579		grounded: M00579 acetyl-CoA=>acetate is the producer
+D-lactate	D-lactate		Glucose fermenter	producer = fermenter proxy (edit if a module is preferred)
+L-lactate	L-lactate		Glucose fermenter	producer = fermenter proxy
+propionate	propionate		Glucose fermenter	producer = fermenter proxy
+succinate	succinate		Glucose fermenter	producer = fermenter proxy
+ethanol	ethanol		Glucose fermenter	producer = fermenter proxy
+pyruvate	pyruvate		Glucose fermenter	producer = fermenter proxy
+fumarate	fumarate		Glucose fermenter	producer = fermenter proxy

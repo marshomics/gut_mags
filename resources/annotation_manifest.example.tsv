@@ -1,0 +1,5 @@
+genome	assembly	prokka_gff	prokka_faa	prokka_ffn	eggnog	kofam
+GUT000001	/data/gut/asm/GUT000001.fna	/data/gut/prokka/GUT000001/GUT000001.gff	/data/gut/prokka/GUT000001/GUT000001.faa	/data/gut/prokka/GUT000001/GUT000001.ffn	/data/gut/eggnog/GUT000001.emapper.annotations	/data/gut/kofam/GUT000001.kofam.tsv
+GUT000002	/data/gut/asm/GUT000002.fna	/data/gut/prokka/GUT000002/GUT000002.gff	/data/gut/prokka/GUT000002/GUT000002.faa	/data/gut/prokka/GUT000002/GUT000002.ffn	/data/gut/eggnog/GUT000002.emapper.annotations	/data/gut/kofam/GUT000002.kofam.tsv
+FREE000051	/scratch/env/batch3/SRR9999999_spades.fasta	/scratch/env/batch3/prokka_out/SRR9999999/PROKKA_08152021.gff	/scratch/env/batch3/prokka_out/SRR9999999/PROKKA_08152021.faa	/scratch/env/batch3/prokka_out/SRR9999999/PROKKA_08152021.ffn	/scratch/env/batch3/eggnog/SRR9999999.emapper.annotations	/scratch/env/batch3/kofam/SRR9999999.detail.tsv
+animal000005	/archive/mouse/asm/m005.fa	/archive/mouse/prokka/m005.gff	/archive/mouse/prokka/m005.faa	/archive/mouse/prokka/m005.ffn	/archive/mouse/eggnog/m005.emapper.annotations	/archive/mouse/kofam/m005.tsv

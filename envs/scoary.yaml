@@ -1,0 +1,7 @@
+name: hgn-scoary
+channels: [conda-forge, bioconda]
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - scoary-2           # Scoary2 pan-GWAS (Roder et al. 2024); pulls fast/numpy deps

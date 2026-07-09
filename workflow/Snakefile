@@ -1,0 +1,193 @@
+# =============================================================================
+# Snakefile -- Human gut niche pipeline
+# =============================================================================
+# Current stage: species/taxonomy by niche. Running `snakemake` builds the
+# TAXONOMY report and its dependencies (metadata + GTDB scaffold only); it does
+# not require the functional annotations. The gene/function stack is built later
+# with:  snakemake functional_all
+#
+# Run (cluster):  snakemake --workflow-profile config/slurm --use-conda -j 500
+# Dry run:        snakemake -n -p
+# DAG:            snakemake --dag | dot -Tsvg > dag.svg
+#
+# Rule-definition order matters: rules referenced by rules.* inside the included
+# files (stage 0/1) are defined here BEFORE the include block at the bottom.
+# =============================================================================
+import os
+from pathlib import Path
+
+configfile: "config/config.yaml"
+
+SCRIPTS = "scripts"
+PY = f"python {SCRIPTS}/python"
+RS = f"Rscript {SCRIPTS}/R"
+RESULTS = config.get("results_dir", "results")
+
+# ---- analysis dimensions ----------------------------------------------------
+CONTRASTS = list(config["stats"]["contrasts"])
+# the within-human Western vs non-Western contrast flows through the differential
+# + enrichment stack automatically once the population analysis is switched on
+if config.get("population", {}).get("enabled"):
+    pc = config["population"]["contrast"]
+    if pc not in CONTRASTS:
+        CONTRASTS.append(pc)
+DIFF_LAYERS = ["ko", "module", "pfam", "cog", "cazyme", "bgc", "amr"]
+# community metabolic/trait layers (auxotrophy/carbon/trait/modulep) enter the
+# differential + consensus stack when the community module is enabled. They are
+# small feature sets and get the phyloglm + CMH + resampling consensus (Scoary2
+# and enrichment do not apply — the features are themselves interpretable).
+COMMUNITY_LAYERS = (config.get("community", {}).get("differential_layers", [])
+                    if config.get("community", {}).get("enabled") else [])
+DIFF_LAYERS = DIFF_LAYERS + COMMUNITY_LAYERS
+ORD_LAYER = config["ordination"]["feature_layer"]
+CHUNK = config["resources"]["annotation_chunk_size"]
+
+# Annotation paths come either from a manifest TSV of explicit per-file paths, or
+# from the {genome} templates. The manifest, when configured, is a real input file
+# so that editing it re-triggers the rules that depend on it.
+_manifest = config["inputs"].get("annotation_manifest")
+ANNOTATION_MANIFEST = ([_manifest] if _manifest and str(_manifest).strip()
+                       and not str(_manifest).startswith("CHANGE_ME") else [])
+ANNOT_PATHS = f"{RESULTS}/00_ingest/annotation_paths.tsv"
+
+# Shell helper: project the named columns of ANNOT_PATHS for the genome ids
+# listed (one per line) in `ids`, emitting "<genome>\t<path>[\t<path>...]" in the
+# order requested. Used wherever an external tool needs a list of files (dbCAN,
+# AMRFinder, antiSMASH, Mash, Panaroo). One pass over the table per job, and no
+# {genome} substitution anywhere outside resolve_annotation_paths.py.
+#
+# It fails loudly on a genome with no path for a requested column rather than
+# quietly dropping it, because a dropped genome biases every prevalence estimate.
+def annot_lookup(ids, kinds, paths=None):
+    if isinstance(kinds, str):
+        kinds = [kinds]
+    want = ",".join(kinds)
+    # c[j] already holds the field's value; "$c[j]" would be parsed as $c
+    fields = " ".join(f'"\\t" c[{i + 1}]' for i in range(len(kinds)))
+    return (
+        f"awk -F'\\t' -v want='{want}' '"
+        f"BEGIN{{n=split(want,k,\",\")}} "
+        f"NR==FNR{{g[$1];next}} "
+        f"FNR==1{{for(i=1;i<=NF;i++) h[$i]=i; "
+        f"        for(j=1;j<=n;j++){{if(!(k[j] in h)){{"
+        f"          printf(\"annot_lookup: no column %s in %s\\n\",k[j],FILENAME) >\"/dev/stderr\"; exit 2}} "
+        f"          col[j]=h[k[j]]}} next}} "
+        f"($1 in g){{for(j=1;j<=n;j++){{c[j]=$(col[j]); "
+        f"          if(c[j]==\"\"){{printf(\"annot_lookup: genome %s has no %s\\n\",$1,k[j]) >\"/dev/stderr\"; exit 2}}}} "
+        f"          print $1 {fields}}}' {ids} {paths or ANNOT_PATHS}")
+
+wildcard_constraints:
+    contrast="|".join(CONTRASTS),
+    layer="|".join(DIFF_LAYERS + ["ec"]),
+    type="kofam|eggnog|dbcan|antismash|amrfinder",
+
+# ---- default targets --------------------------------------------------------
+rule all:                                  # default: taxonomy stage
+    input:
+        f"{RESULTS}/report/taxonomy_report.html",
+
+rule functional_all:                       # later stage: gene/function
+    input:
+        f"{RESULTS}/report/report.html",
+
+# ---- Stage 0: ingest, species units, representatives ------------------------
+rule ingest:
+    input:
+        metadata=config["inputs"]["metadata"],
+    output:
+        parquet=f"{RESULTS}/00_ingest/samples.parquet",
+        tsv=f"{RESULTS}/00_ingest/samples.tsv",
+        report=f"{RESULTS}/00_ingest/samples_qc_report.json",
+    conda: "../envs/python.yaml"
+    shell:
+        f"{PY}/ingest_metadata.py --config config/config.yaml "
+        f"--out-prefix {RESULTS}/00_ingest/samples"
+
+# Resolve every per-genome annotation path ONCE -- from inputs.annotation_manifest
+# if given, otherwise from the {genome} templates -- and validate it before any
+# cluster time is spent. Everything downstream reads this table and never touches
+# the config templates again, so the two ways of declaring paths are equivalent
+# from here on.
+rule annotation_paths:
+    input:
+        samples=rules.ingest.output.parquet,
+        manifest=ANNOTATION_MANIFEST,      # [] when no manifest is configured
+    output:
+        tsv=f"{RESULTS}/00_ingest/annotation_paths.tsv",
+    conda: "../envs/python.yaml"
+    shell:
+        f"{PY}/resolve_annotation_paths.py --config config/config.yaml "
+        f"--samples {{input.samples}} --out {{output.tsv}}"
+
+rule species_units:
+    input:
+        samples=rules.ingest.output.parquet,
+    output:
+        table=f"{RESULTS}/00_ingest/species_table.tsv",
+        occ=f"{RESULTS}/00_ingest/occupancy_matrix.tsv",
+        strains=f"{RESULTS}/00_ingest/strains_per_species.tsv",
+    conda: "../envs/python.yaml"
+    shell:
+        f"{PY}/define_species_units.py --config config/config.yaml "
+        f"--samples {{input.samples}} --out-prefix {RESULTS}/00_ingest"
+
+rule representatives:
+    input:
+        samples=rules.ingest.output.parquet,
+    output:
+        tsv=f"{RESULTS}/00_ingest/representatives.tsv",
+        txt=f"{RESULTS}/00_ingest/representatives.txt",
+    conda: "../envs/python.yaml"
+    shell:
+        f"{PY}/select_representatives.py --config config/config.yaml "
+        f"--samples {{input.samples}} --out-prefix {RESULTS}/00_ingest/representatives"
+
+# ---- Stage 1: ecology (shared by the taxonomy stage) ------------------------
+rule taxonomy_composition:
+    input:
+        samples=rules.ingest.output.parquet,
+        species=rules.species_units.output.table,
+    output:
+        directory(f"{RESULTS}/01_ecology/composition"),
+    conda: "../envs/python.yaml"
+    shell:
+        f"{PY}/taxonomy_composition.py --config config/config.yaml "
+        f"--samples {{input.samples}} --species-table {{input.species}} "
+        f"--out-dir {{output}}"
+
+rule diversity:
+    input:
+        samples=rules.ingest.output.parquet,
+    output:
+        rare=f"{RESULTS}/01_ecology/div_rarefaction_curves.tsv",
+        hill=f"{RESULTS}/01_ecology/div_hill_numbers.tsv",
+        est=f"{RESULTS}/01_ecology/div_richness_estimators.tsv",
+    conda: "../envs/python.yaml"
+    shell:
+        f"{PY}/rarefaction_diversity.py --config config/config.yaml "
+        f"--samples {{input.samples}} --out-prefix {RESULTS}/01_ecology/div"
+
+rule niche_breadth:
+    input:
+        species=rules.species_units.output.table,
+    output:
+        breadth=f"{RESULTS}/01_ecology/breadth_species_breadth.tsv",
+        upset=f"{RESULTS}/01_ecology/breadth_upset_sets.tsv",
+    conda: "../envs/python.yaml"
+    shell:
+        f"{PY}/niche_breadth.py --config config/config.yaml "
+        f"--species-table {{input.species}} --out-prefix {RESULTS}/01_ecology/breadth"
+
+# ---- module includes (reference the rules defined above) --------------------
+include: "rules/taxonomy.smk"       # current focus: species/taxonomy by niche
+include: "rules/transition.smk"     # within-species niche transitions (separate target)
+include: "rules/annotation.smk"
+include: "rules/profiles.smk"
+include: "rules/comparative.smk"
+include: "rules/scoary.smk"          # Scoary2 pan-GWAS (4th method) + clade-stratified
+include: "rules/enrichment.smk"      # functional enrichment of niche signatures
+include: "rules/synthesis.smk"       # capstone: drivers + integrated catalogues (six questions)
+include: "rules/redundancy.smk"      # functional redundancy + Western vs non-Western
+include: "rules/community.smk"       # community & metabolic interaction (input/ tables)
+include: "rules/figures.smk"
+include: "rules/report.smk"

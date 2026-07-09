@@ -1,0 +1,20 @@
+name: hgn-python
+channels: [conda-forge, bioconda]
+dependencies:
+  - python=3.11
+  - pandas=2.2
+  - numpy=1.26
+  - scipy=1.13
+  - scikit-bio=0.6.0      # PCoA, diversity, distance metrics
+  - statsmodels=0.14      # mixed models, GLM, FDR
+  - scikit-learn=1.5
+  - matplotlib=3.9
+  - seaborn=0.13
+  - upsetplot=0.9
+  - biopython=1.83
+  - pyyaml=6.0
+  - networkx=3.3
+  - tqdm=4.66
+  - pyarrow=16.0          # fast parquet I/O for big feature tables
+  - scikit-allel=1.3.7    # SFS, nucleotide diversity, Tajima's D, Fst, Hudson dxy
+  - dendropy=4.6          # tree handling for transition module (Python side)

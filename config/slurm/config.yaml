@@ -1,0 +1,54 @@
+# Snakemake 8+ SLURM profile.
+# Usage:  snakemake --workflow-profile config/slurm --use-conda -j 500
+#
+# Adjust 'slurm_partition' / 'slurm_account' to your cluster. Per-rule resources
+# are read from the `resources:` directive in each rule; defaults below apply
+# when a rule does not set them.
+
+executor: slurm
+jobs: 500
+use-conda: true
+conda-frontend: mamba
+rerun-incomplete: true
+keep-going: true
+printshellcmds: true
+restart-times: 2
+latency-wait: 60
+
+default-resources:
+  slurm_partition: "CHANGE_ME_partition"
+  slurm_account: "CHANGE_ME_account"
+  runtime: 120            # minutes
+  mem_mb: 8000
+  cpus_per_task: 1
+
+# Per-rule overrides (names must match rule names in workflow/rules/*.smk).
+set-resources:
+  run_dbcan:
+    mem_mb: 16000
+    cpus_per_task: 8
+    runtime: 240
+  run_antismash:
+    mem_mb: 24000
+    cpus_per_task: 8
+    runtime: 480
+  run_amrfinder:
+    mem_mb: 8000
+    cpus_per_task: 4
+    runtime: 120
+  gtdbtk_denovo:
+    mem_mb: 320000         # GTDB-Tk pplacer is memory-hungry
+    cpus_per_task: 32
+    runtime: 1440
+  phyloglm_enrichment:
+    mem_mb: 32000
+    cpus_per_task: 8
+    runtime: 360
+  build_species_profiles:
+    mem_mb: 64000
+    cpus_per_task: 8
+    runtime: 240
+  ordination_permanova:
+    mem_mb: 64000
+    cpus_per_task: 8
+    runtime: 240
