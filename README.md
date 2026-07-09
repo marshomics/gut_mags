@@ -75,20 +75,66 @@ split/migration model.
 
 ## Prerequisites
 
-- Snakemake >= 8, conda/mamba (per-rule environments are in `envs/`).
+- Snakemake >= 8 and conda/mamba. Per-rule environments are in `envs/`.
 - A cluster profile: SLURM, or SGE/UGE via `config/sge` or `config/sge-generic`.
 - The genomes' existing annotations: Prokka, eggNOG-mapper, KofamScan outputs.
 - Assemblies (for de novo dbCAN / antiSMASH / AMRFinder, which the workflow runs).
 - GTDB release reference trees + taxonomy (bac120, ar53), and GTDB-Tk DB if you
   graft unplaced species.
-- KEGG module definitions: run `resources/fetch_kegg_modules.py` once.
+
+## Install
+
+The target cluster has **no internet**, and no package may come from the
+`defaults` or `anaconda` channels. Both constraints are handled; the full
+procedure is [`docs/INSTALL.md`](docs/INSTALL.md).
+
+Every file in `envs/` declares `conda-forge`, `bioconda`, `nodefaults` in that
+order; `config/condarc` pins strict channel priority and empties
+`default_channels`; and the build script passes `--override-channels` so a stray
+`~/.condarc` cannot reintroduce them. `check_env_channels.py` refuses to build if
+any of that is violated, and `verify_envs.sh` afterwards reads `conda list
+--explicit` to check the URL each package *actually* came from.
+
+Offline deployment works because Snakemake stores each environment in
+`<conda-prefix>/<hash>`, where the hash is the MD5 of the environment file's
+content — not of the machine or the path. So environments built elsewhere are
+already named what the cluster looks for. Only the absolute paths inside them
+need care: build at a path that exists on both machines, or use `--pack`
+(conda-pack) and let `conda-unpack` rewrite them.
+
+On a Linux x86_64 machine with internet:
+
+```bash
+mamba create -p ./bootstrap -c conda-forge --override-channels snakemake=8.20 mamba
+conda activate ./bootstrap
+export CONDARC=$PWD/config/condarc
+
+bash scripts/sh/build_envs.sh /shared/hgn/conda-envs          # add --pack if paths differ
+rsync -a /shared/hgn/conda-envs/ cluster:/shared/hgn/conda-envs/
+rsync -a deploy/ cluster:/path/to/repo/deploy/
+```
+
+Then on the cluster:
+
+```bash
+bash scripts/sh/deploy_envs.sh /shared/hgn/conda-envs
+```
+
+which verifies the environments and finishes with `snakemake --sdm conda
+--conda-create-envs-only` on the air-gapped host — so a missing or
+hash-mismatched environment fails in seconds rather than three hours into the
+first annotation job.
+
+The build machine must be Linux x86_64: `qhost` reports `lx-amd64` for every
+node, and conda environments do not cross platforms.
 
 ## Configure
 
 Everything scientific lives in [`config/config.yaml`](config/config.yaml), with
-the rationale beside each parameter. Set the `CHANGE_ME` paths (metadata,
-annotation locations with `{genome}` placeholders, GTDB data, reference DBs).
-Nothing is hard-coded in the scripts.
+the rationale beside each parameter. Set the `CHANGE_ME` paths (metadata, GTDB
+data, reference DBs) and declare where the per-genome annotations live — either
+`inputs.annotation_manifest` (a TSV of explicit paths) or the `{genome}`
+templates in `inputs.annotations`. Nothing is hard-coded in the scripts.
 
 ## Run
 
@@ -97,8 +143,8 @@ Step-by-step, with the input inventory and what each stage actually needs:
 the correctness audit is in [`docs/AUDIT.md`](docs/AUDIT.md).
 
 ```bash
-# fetch KEGG module definitions once (needs internet)
-python resources/fetch_kegg_modules.py --out resources/kegg_modules.tsv
+# environments installed and KEGG tables fetched already: see docs/INSTALL.md
+export CONDA_ENVS=/shared/hgn/conda-envs
 
 # check the statistics and the wiring before spending cluster time
 bash tests/run_tests.sh
@@ -107,19 +153,19 @@ bash tests/run_tests.sh
 snakemake -n -p
 
 # CURRENT STAGE: taxonomy by niche (default target; no functional data needed)
-snakemake --workflow-profile config/slurm --use-conda -j 500
+snakemake --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 open results/report/taxonomy_report.html
 
 # WITHIN-SPECIES niche transitions (separate, per-species stage)
-snakemake transition_all --workflow-profile config/slurm --use-conda -j 500
+snakemake transition_all --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 open results/report/transition_report.html
 
 # LATER: gene/function stage
-snakemake functional_all --workflow-profile config/slurm --use-conda -j 500
+snakemake functional_all --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 open results/report/report.html
 
 # stability checks (after the main run)
-bash scripts/sh/run_sensitivity.sh "--workflow-profile config/slurm --use-conda -j 300"
+bash scripts/sh/run_sensitivity.sh "--workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 300"
 ```
 
 The author runs this; the pipeline is not executed during its construction.
@@ -133,14 +179,14 @@ the parallel environment and the memory complex against the live cluster.
 ## Layout
 
 ```
-config/        config.yaml (all parameters) + slurm/ sge/ sge-generic/ profiles
-envs/          per-rule conda environments
+config/        config.yaml (all parameters) + condarc + slurm/ sge/ sge-generic/ profiles
+envs/          per-rule conda environments (conda-forge + bioconda + nodefaults)
 workflow/      Snakefile + rules/{annotation,profiles,comparative,figures,report}.smk
 scripts/python annotation parsing, profiles, differential methods, figures, report
 scripts/R      phyloglm, signal, PGLS, ancestral, ordination/varpart, tree figures
-scripts/sh     sensitivity sweep driver, symlink farm helper
+scripts/sh     env build/deploy/verify, sensitivity sweep, symlink farm
 resources/     KEGG module fetcher + reference-data notes
-docs/          DESIGN_RATIONALE, METHODS (manuscript draft), OUTPUTS catalogue
+docs/          INSTALL, RUNNING, DESIGN_RATIONALE, METHODS, OUTPUTS, AUDIT
 ```
 
 ## Scope and honesty about limits

@@ -1,5 +1,12 @@
 name: hgn-selection
-channels: [conda-forge, bioconda]
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults          # never resolve from `defaults`/`anaconda`: those channels
+                        # carry a commercial ToS and different builds of the same
+                        # version. Build with `--override-channels` too (see
+                        # scripts/sh/build_envs.sh) so a stray ~/.condarc cannot
+                        # reintroduce them.
 dependencies:
   - hyphy=2.5             # BUSTED (episodic positive selection) + RELAX (intensification)
   - mafft=7.5            # protein alignment for codon-aware back-translation

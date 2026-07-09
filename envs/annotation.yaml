@@ -1,5 +1,12 @@
 name: hgn-annotation
-channels: [conda-forge, bioconda]
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults          # never resolve from `defaults`/`anaconda`: those channels
+                        # carry a commercial ToS and different builds of the same
+                        # version. Build with `--override-channels` too (see
+                        # scripts/sh/build_envs.sh) so a stray ~/.condarc cannot
+                        # reintroduce them.
 dependencies:
   - dbcan=4.1             # CAZyme annotation (run_dbcan; HMMER+DIAMOND+dbCAN-sub consensus)
   - hmmer=3.4

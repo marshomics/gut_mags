@@ -1,0 +1,26 @@
+name: hgn-snakemake
+# The environment Snakemake ITSELF runs in, on the cluster submit host. Not a
+# per-rule environment: no rule references this file, so its packages never end
+# up inside a job.
+#
+# Build it off-cluster with the other environments (scripts/sh/build_envs.sh) and
+# ship it the same way; the cluster has no internet, so `pip install` here would
+# fail at exactly the moment you need it.
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults          # never resolve from `defaults`/`anaconda`
+dependencies:
+  - python=3.11
+  - snakemake=8.20
+  - snakemake-executor-plugin-cluster-generic=1.0   # config/sge-generic
+  - pandas=2.2          # the Snakefile imports nothing heavy, but scripts/ do
+  - pyyaml=6.0
+  - conda-pack=0.8      # relocate environments onto the cluster (build side)
+  - pip
+  - pip:
+      # Not on conda-forge. Install with:
+      #   pip install --no-index --find-links=wheels/ snakemake-executor-plugin-sge
+      # after `pip download` on the build machine (see scripts/sh/build_envs.sh).
+      # Only needed for config/sge; config/sge-generic does not use it.
+      - snakemake-executor-plugin-sge

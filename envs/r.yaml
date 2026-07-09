@@ -1,5 +1,12 @@
 name: hgn-r
-channels: [conda-forge, bioconda]
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults          # never resolve from `defaults`/`anaconda`: those channels
+                        # carry a commercial ToS and different builds of the same
+                        # version. Build with `--override-channels` too (see
+                        # scripts/sh/build_envs.sh) so a stray ~/.condarc cannot
+                        # reintroduce them.
 dependencies:
   - r-base=4.3
   - r-tidyverse=2.0
@@ -11,8 +18,7 @@ dependencies:
   - r-caper=1.0           # phylo D statistic (phylo.d)
   - r-picante=1.8         # community phylogenetics
   - r-vegan=2.6           # PERMANOVA, betadisper, varpart, rarefaction
-  - r-ggtree=3.10         # tree figures (bioconda)
-  - bioconductor-ggtree=3.10
+  - bioconductor-ggtree=3.10   # tree figures; there is no `r-ggtree` package
   - r-ggplot2=3.5
   - r-ggnewscale=0.4
   - r-svglite=2.1         # SVG with selectable/editable text

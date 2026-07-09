@@ -1,0 +1,35 @@
+# Conda configuration for building this pipeline's environments.
+#
+#   export CONDARC=$PWD/config/condarc
+#
+# or copy to ~/.condarc. The point of keeping it in the repo is that the channel
+# set becomes part of the record, rather than a property of whichever machine
+# happened to build the environments.
+#
+# `defaults` and `anaconda` are excluded deliberately. They are not just another
+# mirror: they carry Anaconda's commercial terms of service, and they ship
+# different builds of the same version number than conda-forge, so an environment
+# that silently pulls one package from `defaults` is not the environment anyone
+# else will get. bioconda requires conda-forge with STRICT priority; anything
+# else produces solves that work by accident.
+
+channels:
+  - conda-forge
+  - bioconda
+
+# Strict priority: a package found in conda-forge is never taken from a
+# lower-priority channel, even if that channel has a newer version. This is the
+# configuration bioconda is built and tested against.
+channel_priority: strict
+
+# Do not fall back to `defaults` for anything, including the packages conda
+# installs into every new environment.
+default_channels: []
+create_default_packages: []
+
+# `pkgs/main`, `pkgs/r` etc. live under repo.anaconda.com; make sure nothing
+# reintroduces them via an alias.
+channel_alias: https://conda.anaconda.org
+
+auto_activate_base: false
+always_yes: false

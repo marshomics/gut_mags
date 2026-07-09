@@ -104,12 +104,20 @@ other edit.
 
 ## 2. Environment and scheduler
 
+Installation is its own document, because the cluster has no internet and the
+`defaults`/`anaconda` channels are off limits: see
+[`docs/INSTALL.md`](INSTALL.md). In short, environments are built on a Linux
+x86_64 machine with internet and shipped in, and every command below assumes
+
 ```bash
-conda install -n base -c conda-forge -c bioconda snakemake'>=8' mamba
+export CONDA_ENVS=/shared/hgn/conda-envs
+export PATH="$CONDA_ENVS/launcher/bin:$PATH"
+export CONDARC="$PWD/config/condarc"
 ```
 
-Per-rule conda environments live in `envs/` and are built on first use by
-`--use-conda`. Nothing else needs installing by hand.
+`--conda-prefix $CONDA_ENVS` is what points Snakemake at the deployed
+environments. Omit it and it will look in `.snakemake/conda` and try to build
+them, which on an air-gapped host fails at the first rule.
 
 Three cluster profiles ship with the pipeline. Every command below is written
 against SLURM; substitute the profile you use.
@@ -121,7 +129,7 @@ against SLURM; substitute the profile you use.
 | `config/sge-generic` | SGE, via the generic executor | `pip install snakemake-executor-plugin-cluster-generic`; only `qsub`, `qstat`, `qacct`, `qdel` |
 
 ```bash
-snakemake --workflow-profile config/sge --use-conda -j 200
+snakemake --workflow-profile config/sge --sdm conda --conda-prefix $CONDA_ENVS -j 200
 ```
 
 Prefer `config/sge` for array-job submission; prefer `config/sge-generic` if you
@@ -237,7 +245,7 @@ package attached but absent from `envs/*.yaml`.
 Needs: metadata + GTDB trees. Nothing else. Runs today.
 
 ```bash
-snakemake --workflow-profile config/slurm --use-conda -j 500
+snakemake --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 open results/report/taxonomy_report.html
 ```
 
@@ -256,7 +264,7 @@ the change in the methods. antiSMASH is already restricted to representatives.
 
 ```bash
 snakemake results/03_profiles/prevalence_ko.parquet \
-  --workflow-profile config/slurm --use-conda -j 500
+  --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 ```
 
 Or just run stage 3, which pulls this in.
@@ -264,7 +272,7 @@ Or just run stage 3, which pulls this in.
 ## 7. Stage 3 — gene/function signatures
 
 ```bash
-snakemake functional_all --workflow-profile config/slurm --use-conda -j 500
+snakemake functional_all --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 open results/report/report.html
 ```
 
@@ -276,8 +284,8 @@ Scoary2 and enrichment are wired into `functional_all`, but each also has a
 standalone target if you want to iterate on one:
 
 ```bash
-snakemake scoary_all     --workflow-profile config/slurm --use-conda -j 500
-snakemake enrichment_all --workflow-profile config/slurm --use-conda -j 500
+snakemake scoary_all     --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
+snakemake enrichment_all --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 ```
 
 Read `results/05_diff/<layer>/<contrast>_signatures.json` before the figures. It
@@ -293,7 +301,7 @@ Gubbins → IQ-TREE, so cost scales with the number of qualifying species (those
 with ≥ 10 near-complete strains in each of ≥ 2 niches).
 
 ```bash
-snakemake transition_all --workflow-profile config/slurm --use-conda -j 500
+snakemake transition_all --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 500
 open results/report/transition_report.html
 ```
 
@@ -304,10 +312,10 @@ private alleles or π once sample size is equalised.
 ## 9. Stage 5 — communities, redundancy, synthesis
 
 ```bash
-snakemake community_all   --workflow-profile config/slurm --use-conda -j 200
-snakemake redundancy_all  --workflow-profile config/slurm --use-conda -j 200
-snakemake western_all     --workflow-profile config/slurm --use-conda -j 200  # needs the column
-snakemake synthesis_all   --workflow-profile config/slurm --use-conda -j 200
+snakemake community_all   --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 200
+snakemake redundancy_all  --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 200
+snakemake western_all     --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 200  # needs the column
+snakemake synthesis_all   --workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 200
 open results/report/synthesis_report.html
 ```
 
@@ -320,7 +328,7 @@ stack, and builds the three human-specific catalogues and the master figure.
 After the main run, not before:
 
 ```bash
-bash scripts/sh/run_sensitivity.sh "--workflow-profile config/slurm --use-conda -j 300"
+bash scripts/sh/run_sensitivity.sh "--workflow-profile config/slurm --sdm conda --conda-prefix $CONDA_ENVS -j 300"
 ```
 
 Sweeps the presence threshold (0.1 / 0.5 / 0.9), HQ-only genomes, drop-mouse, and

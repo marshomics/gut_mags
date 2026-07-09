@@ -85,6 +85,9 @@ os.chdir(here)
 print("OK")
 PY
 
+hdr "3a. no conda environment can resolve from defaults/anaconda"
+python3 scripts/python/check_env_channels.py envs || FAIL=1
+
 hdr "3b. every R package attached with library() is declared in envs/r.yaml"
 python3 - <<'PY' || FAIL=1
 import glob, re, sys, yaml

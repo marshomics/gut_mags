@@ -44,6 +44,10 @@ executor: sge
 jobs: 200                    # standard.q had ~761 slots free; stay well under it
 use-conda: true
 conda-frontend: mamba
+# Where the pre-built, air-gapped environments live. Without this Snakemake looks
+# in .snakemake/conda and tries to BUILD them, which on a cluster with no
+# internet means the run dies at the first rule. See docs/INSTALL.md.
+# conda-prefix: "CHANGE_ME/shared/hgn/conda-envs"
 rerun-incomplete: true
 keep-going: true
 printshellcmds: true

@@ -1,5 +1,12 @@
 name: hgn-phylo
-channels: [conda-forge, bioconda]
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults          # never resolve from `defaults`/`anaconda`: those channels
+                        # carry a commercial ToS and different builds of the same
+                        # version. Build with `--override-channels` too (see
+                        # scripts/sh/build_envs.sh) so a stray ~/.condarc cannot
+                        # reintroduce them.
 dependencies:
   - gtdbtk=2.4.0          # de-novo placement of unplaced species onto GTDB scaffold
   - fasttree=2.1.11       # optional fallback for grafting subtrees

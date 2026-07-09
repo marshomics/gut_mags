@@ -1,5 +1,12 @@
 name: hgn-python
-channels: [conda-forge, bioconda]
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults          # never resolve from `defaults`/`anaconda`: those channels
+                        # carry a commercial ToS and different builds of the same
+                        # version. Build with `--override-channels` too (see
+                        # scripts/sh/build_envs.sh) so a stray ~/.condarc cannot
+                        # reintroduce them.
 dependencies:
   - python=3.11
   - pandas=2.2
